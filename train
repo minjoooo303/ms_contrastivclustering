@@ -1,21 +1,22 @@
 import os
 import numpy as np
-import torch
 import torchvision
+import torch
 import argparse
-from utils import yaml_config_hook, save_model
 from modules import transform, resnet, network, contrastive_loss
+from utils import yaml_config_hook, save_model
 from torch.utils import data
+from torchvision import transforms
 
 
 class contrastive_clustering_train():
-    def __init__(self, data_loc):
+    def __init__(self,data_loc):
         self.data_loc=data_loc
-        self.parser = argparse.ArgumentParser()
-        self.config = yaml_config_hook("config/config.yaml")
-        for k, v in self.config.items():
-            self.parser.add_argument(f"--{k}", default=v, type=type(v))
-        self.args = self.parser.parse_args()
+        parser = argparse.ArgumentParser()
+        config = yaml_config_hook("config/config.yaml")
+        for k, v in config.items():
+            parser.add_argument(f"--{k}", default=v, type=type(v))
+        self.args = parser.parse_args()
         if not os.path.exists(self.args.model_path):
             os.makedirs(self.args.model_path)
 
@@ -25,11 +26,101 @@ class contrastive_clustering_train():
         torch.cuda.manual_seed(self.args.seed)
         np.random.seed(self.args.seed)
 
+    def prepare_data(self):
+        if cc.args.dataset == "CIFAR-10":
+            train_dataset = torchvision.datasets.CIFAR10(
+                root=self.args.dataset_dir,
+                download=True,
+                train=True,
+                transform=transform.Transforms(size=cc.args.image_size, s=0.5),
+            )
+            test_dataset = torchvision.datasets.CIFAR10(
+                root=self.args.dataset_dir,
+                download=True,
+                train=False,
+                transform=transform.Transforms(size=cc.args.image_size, s=0.5),
+            )
+            dataset = data.ConcatDataset([train_dataset, test_dataset])
+            self.class_num = 10
+        elif cc.args.dataset == "CIFAR-100":
+            train_dataset = torchvision.datasets.CIFAR100(
+                root=self.args.dataset_dir,
+                download=True,
+                train=True,
+                transform=transform.Transforms(size=cc.args.image_size, s=0.5),
+            )
+            test_dataset = torchvision.datasets.CIFAR100(
+                root=self.args.dataset_dir,
+                download=True,
+                train=False,
+                transform=transform.Transforms(size=cc.args.image_size, s=0.5),
+            )
+            dataset = data.ConcatDataset([train_dataset, test_dataset])
+            self.class_num = 20
+        elif cc.args.dataset == "ImageNet-10":
+            dataset = torchvision.datasets.ImageFolder(
+                root='datasets/imagenet-10',
+                transform=transform.Transforms(size=cc.args.image_size, blur=True),
+            )
+            self.class_num = 10
+        elif self.args.dataset == "ImageNet-dogs":
+            dataset = torchvision.datasets.ImageFolder(
+                root='datasets/imagenet-dogs',
+                transform=transform.Transforms(size=cc.args.image_size, blur=True),
+            )
+            class_num = 15
+        elif self.args.dataset == "tiny-ImageNet":
+            dataset = torchvision.datasets.ImageFolder(
+                root='datasets/tiny-imagenet-200/train',
+                transform=transform.Transforms(s=0.5, size=cc.args.image_size),
+            )
+            self.class_num = 200
+        else:
+            dataset = torchvision.datasets.ImageFolder(
+                root=self.data_loc,
+                #"C:/Users/owner/OneDrive - postech.ac.kr/바탕 화면/Contrastive-Clustering-main/Contrastive-Clustering-main/datasets/coffee_data_img"
+                transform=transform.Transforms(size=cc.args.image_size, blur=True)
+            )
+            self.class_num = 10
+
+        self.data_loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.args.batch_size,
+            shuffle=True,
+            drop_last=True,
+            num_workers=cc.args.workers,
+        )
+
+    def initialize_model(self):
+        res = resnet.get_resnet(cc.args.resnet)
+        self.model = network.Network(res, cc.args.feature_dim, self.class_num)
+        self.model = self.model.to('cuda')
+
+    def optimize(self):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+        if self.args.reload:
+            model_fp = os.path.join(self.args.model_path, "checkpoint_{}.tar".format(self.args.start_epoch))
+            checkpoint = torch.load(model_fp)
+            self.model.load_state_dict(checkpoint['net'])
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            self.args.start_epoch = checkpoint['epoch'] + 1
+        loss_device = torch.device("cuda")
+        self.criterion_instance = contrastive_loss.InstanceLoss(self.args.batch_size, self.args.instance_temperature, loss_device).to(
+            loss_device)
+        self.criterion_cluster = contrastive_loss.ClusterLoss(self.class_num, self.args.cluster_temperature, loss_device).to(loss_device)
+   
+    def train_loop(self):
+        for epoch in range(self.args.start_epoch, self.args.epochs):
+            lr = self.optimizer.param_groups[0]["lr"]
+            loss_epoch = self.train()
+            if epoch % 10 == 0:
+                save_model(self.args,self.model, self.optimizer, epoch)
+            print(f"Epoch [{epoch}/{self.args.epochs}]\t Loss: {loss_epoch / len(self.data_loader)}")
+        save_model(self.args, self.model, self.optimizer, self.args.epochs)
+    
     def train(self):
         loss_epoch = 0
-        for step,((x_i, x_j),_) in enumerate(self.data_loader):
-        # for  x_i, x_j in enumerate(self.data_loader):
-            print(f"x_i shape: {x_i.shape}, x_j shape: {x_j.shape}")  # 데이터 차원 확인
+        for step, ((x_i, x_j), _) in enumerate(self.data_loader):
             self.optimizer.zero_grad()
             x_i = x_i.to('cuda')
             x_j = x_j.to('cuda')
@@ -45,137 +136,12 @@ class contrastive_clustering_train():
             loss_epoch += loss.item()
         return loss_epoch
 
-    def preparedata(self):#args.dataset가 ~중 하나면 그대로 아니면 주소
-        if self.args.dataset == "CIFAR-10":
-            train_dataset = torchvision.datasets.CIFAR10(
-                root=self.args.dataset_dir,
-                download=True,
-                train=True,
-                transform=transform.Transforms(size=self.args.image_size, s=0.5),
-            )
-            test_dataset = torchvision.datasets.CIFAR10(
-                root=self.args.dataset_dir,
-                download=True,
-                train=False,
-                transform=transform.Transforms(size=self.args.image_size, s=0.5),
-            )
-            dataset = data.ConcatDataset([train_dataset, test_dataset])
-            self.class_num = 10
-        elif self.args.dataset == "CIFAR-100":
-            train_dataset = torchvision.datasets.CIFAR100(
-                root=self.args.dataset_dir,
-                download=True,
-                train=True,
-                transform=transform.Transforms(size=self.args.image_size, s=0.5),
-            )
-            test_dataset = torchvision.datasets.CIFAR100(
-                root=self.args.dataset_dir,
-                download=True,
-                train=False,
-                transform=transform.Transforms(size=self.args.image_size, s=0.5),
-            )
-            dataset = data.ConcatDataset([train_dataset, test_dataset])
-            self.class_num = 20
-        elif self.args.dataset == "ImageNet-10":
-            dataset = torchvision.datasets.ImageFolder(
-                root='datasets/imagenet-10',
-                transform=transform.Transforms(size=self.args.image_size, blur=True),
-            )
-            self.class_num = 10
-        elif self.args.dataset == "ImageNet-dogs":
-            dataset = torchvision.datasets.ImageFolder(
-                root='datasets/imagenet-dogs',
-                transform=transform.Transforms(size=self.args.image_size, blur=True),
-            )
-            self.class_num = 15
-        elif self.args.dataset == "tiny-ImageNet":
-            dataset = torchvision.datasets.ImageFolder(
-                root='datasets/tiny-imagenet-200/train',
-                transform=transform.Transforms(s=0.5, size=self.args.image_size),
-            )
-            self.class_num = 200         
-         
-        else:
-            dataset = torchvision.datasets.ImageFolder(
-                    root=self.data_loc,
-                    transform=transform.Transforms(size=self.args.image_size).test_transform,
-                )
-            self.class_num = 200
-        self.data_loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=self.args.batch_size,
-            shuffle=True,
-            drop_last=True,
-            num_workers=self.args.workers,
-        )
-        # 데이터 로더의 데이터를 변형할 함수를 설정합니다.
-       # self.check_batch_sizes_and_paths(self.data_loader)
-        #self.check_batch_sizes(self.data_loader)
-        #self.data_loader = [(self.transform_batch(batch)) for batch in self.data_loader]
-    
-  
-
-
-
-    def initializemodel(self):
-        self.res = resnet.get_resnet(self.args.resnet)
-        self.model = network.Network(self.res, self.args.feature_dim, self.class_num)
-        self.model = self.model.to('cuda')
-
-    def optimize(self):
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
-        if self.args.reload:
-            model_fp = os.path.join(self.args.model_path, "checkpoint_{}.tar".format(self.args.start_epoch))
-            checkpoint = torch.load(model_fp)
-            self.model.load_state_dict(checkpoint['net'])
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
-            self.args.start_epoch = checkpoint['epoch'] + 1
-        loss_device = torch.device("cuda")
-        self.criterion_instance = contrastive_loss.InstanceLoss(self.args.batch_size, self.args.instance_temperature, loss_device).to(
-            loss_device)
-        self.criterion_cluster = contrastive_loss.ClusterLoss(self.class_num, self.args.cluster_temperature, loss_device).to(loss_device)
-    
-    def train_loop(self):
-        for epoch in range(self.args.start_epoch, self.args.epochs):
-            lr = self.optimizer.param_groups[0]["lr"]
-            loss_epoch = self.train()
-            if epoch % 10 == 0: #몇번마다 모델 저장
-                save_model(self.args, self.model, self.optimizer, epoch)
-            print(f"Epoch [{epoch}/{self.args.epochs}]\t Loss: {loss_epoch / len(self.data_loader)}")
-        save_model(self.args, self.model, self.optimizer, self.args.epochs)
-
-    def print_data_properties(self):
-        # 한 배치의 샘플을 가져옵니다.
-        for batch in self.data_loader:
-            images, labels = batch
-            
-            # `images`가 리스트인지 확인
-            if isinstance(images, list):
-                print("Images is a list.")
-                # 리스트를 텐서로 변환할 필요가 있으면 변환
-                images = torch.stack([torch.tensor(img) for img in images])
-            
-            # `labels`가 리스트인지 확인
-            if isinstance(labels, list):
-                print("Labels is a list.")
-                # 리스트를 텐서로 변환할 필요가 있으면 변환
-                labels = torch.tensor(labels)
-            
-            print(f"Batch images shape: {images.shape}")
-            print(f"Batch labels shape: {labels.shape}")
-            print(f"Sample image size: {images[0].shape}")
-            print(f"Sample label: {labels[0]}")
-            break  # 첫 배치만 확인
-
-
-    
 if __name__ == "__main__":
     cc=contrastive_clustering_train("c:/Users/owner/Desktop/minju/Contrastive-Clustering-main/datasets/datainonegroup")
-                                    #'/Users/owner/Desktop/minju/trainset/ver1grouping')
-    
     cc.randomseed()
-    cc.preparedata()
-    cc.initializemodel()
+    cc.prepare_data()
+    cc.initialize_model()
     cc.optimize()
-    cc.print_data_properties()  # 데이터 속성 확인
     cc.train_loop()
+    
+

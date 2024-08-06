@@ -9,24 +9,120 @@ from evaluation import evaluation
 from torch.utils import data
 import copy
 
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.preprocessing import LabelEncoder
+import torchvision.transforms as T
+
+import torchvision.transforms as T
+from PIL import Image
+
+from torchvision.transforms import Compose
+from torchvision.transforms.functional import rgb_to_grayscale
+from PIL import Image
+from torchvision.transforms import Compose, Resize, ToTensor
+
+class ToGrayscale:
+    def __call__(self, image):
+        if isinstance(image, Image.Image):
+            return rgb_to_grayscale(image, num_output_channels=1)
+        else:
+            raise TypeError(f"img should be PIL Image. Got {type(image)}")
+        
+def transform_func(image):
+    transform_list = [transform.Resize(args.image_size), ToGrayscale()]
+    transform_pipeline = transform.Compose(transform_list)
+    return transform_pipeline(image)
+
+def show_images(original_images, transformed_images, num_images=5):
+    """
+    Display original and transformed images side by side.
+
+    Parameters:
+        original_images (Tensor): Tensor of original images.
+        transformed_images (Tensor): Tensor of transformed images.
+        num_images (int): Number of images to display.
+    """
+    # Print tensor shapes for debugging
+    print(f"Original images shape: {original_images.shape}")
+    print(f"Transformed images shape: {transformed_images.shape}")
+
+    # Convert tensors to PIL images for visualization
+    to_pil = T.ToPILImage()
+    
+    # Extract a subset of images to display
+    original_images = original_images[:num_images]
+    transformed_images = transformed_images[:num_images]
+
+    # Create a plot to show images
+    fig, axes = plt.subplots(num_images, 2, figsize=(10, num_images * 2))
+    for i in range(num_images):
+        if original_images[i].ndimension() == 3:  # Ensure it has 3 dimensions
+            axes[i, 0].imshow(to_pil(original_images[i]))
+            axes[i, 0].set_title('Original Image')
+            axes[i, 0].axis('off')
+
+        if transformed_images[i].ndimension() == 3:  # Ensure it has 3 dimensions
+            axes[i, 1].imshow(to_pil(transformed_images[i]))
+            axes[i, 1].set_title('Transformed Image')
+            axes[i, 1].axis('off')
+
+    plt.tight_layout()
+    plt.show()
+
+
+# def inference(loader, model, device):
+#     model.eval()
+#     feature_vector = []
+#     labels_vector = []
+#     for step, (x, y) in enumerate(loader):
+#         x = x.to(device)
+#         with torch.no_grad():
+#             c = model.forward_cluster(x)
+#         c = c.detach()
+#         feature_vector.extend(c.cpu().detach().numpy())
+#         labels_vector.extend(y.numpy())
+#         if step % 20 == 0:
+#             print(f"Step [{step}/{len(loader)}]\t Computing features...")
+#     feature_vector = np.array(feature_vector)
+#     labels_vector = np.array(labels_vector)
+#     print("Features shape {}".format(feature_vector.shape))
+
+#     return feature_vector, labels_vector
 
 def inference(loader, model, device):
     model.eval()
     feature_vector = []
     labels_vector = []
+    original_images = []
+    transformed_images = []
+
     for step, (x, y) in enumerate(loader):
         x = x.to(device)
         with torch.no_grad():
             c = model.forward_cluster(x)
-        c = c.detach()
+        
+        # Collect features and labels
         feature_vector.extend(c.cpu().detach().numpy())
         labels_vector.extend(y.numpy())
+        
+        # Collect images from the first batch for visualization
+        if step == 0:
+            original_images = x.cpu().detach()
+            transformed_images = c.cpu().detach()
+
         if step % 20 == 0:
             print(f"Step [{step}/{len(loader)}]\t Computing features...")
+        if len(original_images) >= 5:
+            break
+
     feature_vector = np.array(feature_vector)
     labels_vector = np.array(labels_vector)
     print("Features shape {}".format(feature_vector.shape))
-    return feature_vector, labels_vector
+
+    return feature_vector, labels_vector, original_images, transformed_images
+
 
 
 if __name__ == "__main__":
@@ -35,7 +131,14 @@ if __name__ == "__main__":
     for k, v in config.items():
         parser.add_argument(f"--{k}", default=v, type=type(v))
     args = parser.parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+
+
+    transform_pipeline = Compose([
+        Resize(args.image_size),
+        ToGrayscale(),
+        ToTensor()
+    ])
 
     if args.dataset == "CIFAR-10":
         train_dataset = torchvision.datasets.CIFAR10(
@@ -89,17 +192,18 @@ if __name__ == "__main__":
         )
         class_num = 10
     elif args.dataset == "ImageNet-dogs":
+        
         dataset = torchvision.datasets.ImageFolder(
-            root='datasets/imagenet-dogs',
-            transform=transform.Transforms(size=args.image_size).test_transform,
+            root='/Users/minjulee/Documents/Contrastive-Clustering-main/datasets/lee/jaebal',
+            transform=transform_pipeline,
         )
         class_num = 15
     elif args.dataset == "tiny-ImageNet":
         dataset = torchvision.datasets.ImageFolder(
-            root='datasets/tiny-imagenet-200/train',
+            root='/Users/minjulee/Documents/Contrastive-Clustering-main/datasets/tiny-ImageNet/hi',
             transform=transform.Transforms(size=args.image_size).test_transform,
         )
-        class_num = 200
+        class_num = 15
     else:
         raise NotImplementedError
     data_loader = torch.utils.data.DataLoader(
@@ -117,7 +221,7 @@ if __name__ == "__main__":
     model.to(device)
 
     print("### Creating features from model ###")
-    X, Y = inference(data_loader, model, device)
+    X, Y, original_images, transformed_images = inference(data_loader, model, device)
     if args.dataset == "CIFAR-100":  # super-class
         super_label = [
             [72, 4, 95, 30, 55],
@@ -146,4 +250,21 @@ if __name__ == "__main__":
             for j in super_label[i]:
                 Y[Y_copy == j] = i
     nmi, ari, f, acc = evaluation.evaluate(Y, X)
-    print('NMI = {:.4f} ARI = {:.4f} F = {:.4f} ACC = {:.4f}'.format(nmi, ari, f, acc))
+    # print('NMI = {:.4f} ARI = {:.4f} F = {:.4f} ACC = {:.4f}'.format(nmi, ari, f, acc))
+    # print("### Showing original and transformed images ###")
+    #show_images(original_images, transformed_images, num_images=5)
+    
+    for i in range(0, 10):
+        num=0
+        for j in range(0,len(X)):
+            if(X[j]==i):
+                num=num+1
+        print(f"{i} : {num} 개")
+            
+    # print("### Visualizing t-SNE embeddings ###")
+    # visualize_tsne(X, Y)
+
+    # print("### Showing original and augmented images ###")
+    # # Get a sample image and its augmented version
+    # sample_img, _ = dataset[0]  # Get the first image from the dataset
+    # show_image_transforms(sample_img, transform.Transforms(size=args.image_size).test_transform)

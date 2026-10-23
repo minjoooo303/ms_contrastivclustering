@@ -1,3 +1,13 @@
+> ## Attribution and scope
+>
+> This repository contains a **study/experiment copy** of code associated with *Contrastive Clustering* (AAAI 2021) by Yunfan Li and coauthors. The original method and baseline implementation should be attributed to those researchers.
+>
+> The repository does **not currently document which lines, if any, were independently modified** by this GitHub account, nor a separately verified benchmark. It should not be interpreted as independently authored research.
+>
+> The original project description and citation follow below.
+
+---
+
 # News
 
 An extension of this work has been released on https://github.com/Yunfan-Li/Twin-Contrastive-Learning. It significantly improves the clustering performance and supports multi-gpu training.
